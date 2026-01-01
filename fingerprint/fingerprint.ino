@@ -1,93 +1,121 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
 #include "BleProvisioning.h"
 #include "FingerprintSensor.h"
-#include <WiFi.h>
-#include <WebServer.h> 
 
+// ================= WEB SERVER =================
 WebServer server(80);
-bool fp_scanning_enabled = false; // Trạng thái quét vân tay, quản lý qua Wi-Fi
 
-void handleFpImageRequest() {
-  if (!WiFi.isConnected()) {
-    server.send(503, "text/plain", "WiFi not connected.");
-    return;
-  }
-  
-  uint16_t size = fpGetImageSize();
-  
-  if (size == 0) {
-    // 204 No Content: Không có dữ liệu để gửi
-    server.send(204); 
-    return;
-  }
+// ================= FP STATE =================
+enum FPState {
+  FP_IDLE,
+  FP_SCANNING,
+  FP_DONE
+};
 
-  // Gửi dữ liệu ảnh RAW bytes qua HTTP
-  server.send_P(200, "application/octet-stream", (const char*)fpGetImageData(), size);
-  Serial.printf("[WEB] Sent %d bytes of RAW fingerprint image.\n", size);
-}
+volatile FPState fpState = FP_IDLE;
+volatile bool fpImageReady = false;
 
-void handleFpControl() {
-  if (server.hasArg("cmd")) {
-    String cmd = server.arg("cmd");
-    if (cmd == "start") {
-      fp_scanning_enabled = true;
-      server.send(200, "text/plain", "START scanning enabled.");
-      Serial.println("[WEB] Received START command.");
-    } else if (cmd == "stop") {
-      fp_scanning_enabled = false;
-      server.send(200, "text/plain", "STOP scanning enabled.");
-      Serial.println("[WEB] Received STOP command.");
-    } else {
-      server.send(400, "text/plain", "Invalid command. Use 'start' or 'stop'.");
-    }
-  } else {
-    server.send(400, "text/plain", "Missing 'cmd' parameter.");
-  }
-}
-
+// ================= SETUP =================
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  
+  delay(300);
+
+  Serial.println("\n=== ESP32-C6 AS608 FINGERPRINT SERVER ===");
+
+  // BLE dùng để nhận WiFi SSID / PASS
   bleProvInit();
+
+  // Fingerprint
   fpInit();
-  
-  // Định nghĩa endpoint Web Server
-  server.on("/fpimage", HTTP_GET, handleFpImageRequest); 
-  server.on("/fpcontrol", HTTP_GET, handleFpControl); // Endpoint mới nhận lệnh Start/Stop
-  server.on("/", HTTP_GET, [](){
-    server.send(200, "text/plain", "ESP32-C6 FP Server. Status: " + String(fp_scanning_enabled ? "SCANNING" : "STOPPED") + " IP: " + WiFi.localIP().toString());
-  });
+
+  // HTTP API
+  server.on("/fpcontrol", handleFpControl);
+  server.on("/fpimage", handleFpImage);
+
+  Serial.println("[SYS] Setup done");
 }
 
+// ================= LOOP =================
 void loop() {
+  // BLE provisioning loop
   bleProvLoop();
-  
-  // Xử lý Web Server chỉ khi Wi-Fi đã kết nối
-  if (WiFi.isConnected()) {
-    static bool server_started = false;
-    if (!server_started) {
-      server.begin();
-      server_started = true;
-      Serial.println("[WEB] HTTP Server started.");
-    }
+
+  // Start web server sau khi có WiFi
+  static bool webStarted = false;
+  if (WiFi.isConnected() && !webStarted) {
+    server.begin();
+    webStarted = true;
+    Serial.println("[WEB] HTTP server started");
+  }
+
+  if (webStarted) {
     server.handleClient();
   }
-  
-  // === LOGIC ĐIỀU KHIỂN FINGERPRINT SCANNING ===
-  static unsigned long last_scan_time = 0;
-  const long scan_interval = 500; // Quét 2 lần/giây
 
-  if (fp_scanning_enabled) {
-    if (millis() - last_scan_time >= scan_interval) {
-      // fpLoop() sẽ cố gắng chụp ảnh và lưu vào buffer nếu có ngón tay
-      if (fpLoop()) {
-        Serial.printf("[MAIN] New FP image captured: %d bytes.\n", fpGetImageSize());
-      }
-      last_scan_time = millis();
+  // ================= SINGLE SHOT SCAN =================
+  if (fpState == FP_SCANNING) {
+    Serial.println("[FP] Scan session started");
+
+    bool ok = fpLoop();   // GenImg + UpImage (1 lần)
+
+    if (ok) {
+      fpImageReady = true;
+      Serial.println("[FP] Fingerprint image ready");
+    } else {
+      Serial.println("[FP] Scan failed or no finger");
     }
-  } 
-  // Nếu fp_scanning_enabled = false, fpLoop() không được gọi,
-  // ảnh cuối cùng được giữ lại.
+
+    fpState = FP_DONE;   // kết thúc phiên
+  }
 }
-// Giữ nguyên FingerprintSensor.h và FingerprintSensor.cpp từ câu trả lời trước.
+
+// ================= HTTP HANDLERS =================
+
+// ---- START SCAN ----
+void handleFpControl() {
+  if (!server.hasArg("cmd")) {
+    server.send(400, "text/plain", "Missing cmd");
+    return;
+  }
+
+  if (server.arg("cmd") == "start") {
+    if (fpState == FP_IDLE) {
+      fpState = FP_SCANNING;
+      fpImageReady = false;
+
+      Serial.println("[WEB] FP START command");
+      server.send(200, "text/plain", "FP scan started");
+    } else {
+      server.send(409, "text/plain", "FP busy");
+    }
+  } else {
+    server.send(400, "text/plain", "Invalid cmd");
+  }
+}
+
+// ---- GET IMAGE ----
+void handleFpImage() {
+  if (!fpImageReady) {
+    server.send(404, "text/plain", "Image not ready");
+    return;
+  }
+
+  uint8_t* img = fpGetImageData();
+  uint16_t size = fpGetImageSize();
+
+  server.sendHeader("Content-Type", "application/octet-stream");
+  server.sendHeader("Content-Length", String(size));
+  server.send(200);
+
+  WiFiClient client = server.client();
+  client.write(img, size);
+
+  Serial.printf("[WEB] Image sent (%d bytes)\n", size);
+
+  // Reset state cho lần quét tiếp theo
+  fpImageReady = false;
+  fpState = FP_IDLE;
+}

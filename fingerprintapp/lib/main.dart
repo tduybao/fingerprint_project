@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
-import 'package:image/image.dart' as img; // *** Đảm bảo đã thêm 'image' trong pubspec.yaml ***
+import 'package:image/image.dart' as img; // Đảm bảo đã thêm 'image' trong pubspec.yaml
 
 // =======================================================================
 // UUIDs CỦA BLE PROVISIONING
@@ -69,13 +69,9 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   void dispose() {
     _connSub?.cancel();
     _statusSub?.cancel();
-    _stopFpScanTimer(); // Huỷ Timer khi đóng màn hình
+    _stopFpScanTimer();
     super.dispose();
   }
-
-// =======================================================================
-// CÁC HÀM CŨ (Scan, Connect BLE, Provisioning)
-// =======================================================================
 
   Future<void> checkPermissionsAndInitialize() async {
     await [
@@ -215,15 +211,13 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
       _statusSub?.cancel();
       _statusSub = statusChar.onValueReceived.listen((value) {
         final statusText = utf8.decode(value);
-
         String uiText;
         String? espIp;
 
         if (statusText.startsWith("connected:")) {
           espIp = statusText.substring("connected:".length);
           uiText = "Wi-Fi OK! IP: $espIp ✅";
-          // Khi Wi-Fi thành công, ngắt kết nối BLE để tối ưu
-          targetDevice?.disconnect(); 
+          targetDevice?.disconnect();
         } else if (statusText == "connecting") {
           uiText = "Đang kết nối Wi-Fi...";
         } else if (statusText == "failed") {
@@ -248,42 +242,36 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
     }
   }
 
-// =======================================================================
-// HÀM ĐIỀU KHIỂN VÂN TAY QUA HTTP
-// =======================================================================
+  // =======================================================================
+  // HÀM ĐIỀU KHIỂN VÂN TAY (CHỈ CÒN START)
+  // =======================================================================
+  Future<void> _startFingerprintScan() async {
+    if (_espIp == null || _isFpScanning) return;
 
-  Future<void> _sendFpControlCommand(bool start) async {
-    if (_espIp == null) {
-      setState(() => connectionStatus = "Chưa có IP Wi-Fi.");
-      return;
-    }
+    setState(() => _isFpScanning = true);
 
-    final command = start ? "start" : "stop";
-
+    // Gửi lệnh START
     try {
-      // Gọi endpoint fpcontrol qua HTTP GET
-      final url = 'http://$_espIp/fpcontrol?cmd=$command';
+      final url = 'http://$_espIp/fpcontrol?cmd=start';
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
-        setState(() => _isFpScanning = start);
+        connectionStatus = "Đang quét vân tay...";
 
-        if (start) {
-          _startFpScanTimer();
-          connectionStatus = "Đã gửi lệnh START quét vân tay (Wi-Fi).";
-        } else {
-          _stopFpScanTimer();
-          connectionStatus = "Đã gửi lệnh STOP. Giữ nguyên ảnh cuối.";
-        }
+        // Bắt timer để lấy ảnh liên tục mà không đơ AS608
+        _startFpScanTimer();
       } else {
-        setState(() => connectionStatus = "Lỗi gửi lệnh FP (HTTP ${response.statusCode}): ${utf8.decode(response.bodyBytes)}");
+        setState(() => connectionStatus = "Lỗi gửi lệnh START: ${response.statusCode}");
+        setState(() => _isFpScanning = false);
       }
     } catch (e) {
-      setState(() => connectionStatus = "Lỗi HTTP gửi lệnh: $e");
+      setState(() {
+        connectionStatus = "Lỗi HTTP START: $e";
+        _isFpScanning = false;
+      });
     }
   }
 
-  // LẤY ẢNH VÂN TAY (Cập nhật logic Status 204)
   Future<void> _fetchFingerprintImage() async {
     if (_espIp == null) return;
 
@@ -291,15 +279,16 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
       final response = await http.get(Uri.parse('http://$_espIp/fpimage'));
 
       if (response.statusCode == 200) {
-        // Thành công: Nhận RAW bytes
+        // Nhận RAW bytes
         setState(() {
           _fpImageBytes = response.bodyBytes;
-          connectionStatus = _isFpScanning
-            ? "Đang quét/Ảnh mới (${_fpImageBytes!.length} bytes)"
-            : "Ảnh cuối (${_fpImageBytes!.length} bytes)";
+          connectionStatus = "Ảnh vân tay mới (${_fpImageBytes!.length} bytes)";
+          _isFpScanning = false; // Khi ảnh nhận xong, mở lại nút START
         });
-      } else if (response.statusCode == 204) { // No Content (Không có ngón tay)
-        setState(() => connectionStatus = _isFpScanning ? "Đang quét, chờ ngón tay..." : "Ảnh cuối: Không thay đổi.");
+        _stopFpScanTimer();
+      } else if (response.statusCode == 204) {
+        // No Content, vẫn đang quét
+        setState(() => connectionStatus = "Đang quét, chờ ngón tay...");
       } else {
         setState(() => connectionStatus = "Lỗi HTTP: ${response.statusCode}");
       }
@@ -308,10 +297,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
     }
   }
 
-  // TIMER CHO CHẾ ĐỘ QUÉT LIÊN TỤC
   void _startFpScanTimer() {
     _stopFpScanTimer();
-    // Gọi API HTTP cứ mỗi 700ms
     _fpScanTimer = Timer.periodic(const Duration(milliseconds: 700), (timer) {
       if (_espIp != null && _isFpScanning) {
         _fetchFingerprintImage();
@@ -324,10 +311,9 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
     _fpScanTimer = null;
   }
 
-
-// =======================================================================
-// UI BUILD
-// =======================================================================
+  // =======================================================================
+  // BUILD UI
+  // =======================================================================
   @override
   Widget build(BuildContext context) {
     final bool isConnected = _connectionState == BluetoothConnectionState.connected;
@@ -382,16 +368,14 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                 child: const Text("Ngắt kết nối"),
               ),
 
-            // Form Provisioning (Chỉ hiển thị khi đã kết nối BLE nhưng chưa có IP)
+            // Form Provisioning
             if (targetDevice != null && !isScanning && _espIp == null)
               Padding(
                 padding: const EdgeInsets.only(top: 30.0),
-                child: ProvisioningForm(
-                  onSubmit: connectAndProvision,
-                ),
+                child: ProvisioningForm(onSubmit: connectAndProvision),
               ),
 
-            // Khu vực điều khiển và hiển thị Vân tay (Chỉ hiển thị khi đã có IP)
+            // Khu vực điều khiển vân tay
             if (_espIp != null) ...[
               const SizedBox(height: 30),
               Card(
@@ -409,34 +393,19 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
-                      // Nút START/STOP (Điều khiển qua HTTP)
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: _isFpScanning ? null : () => _sendFpControlCommand(true),
-                              icon: const Icon(Icons.play_arrow, color: Colors.white),
-                              label: const Text("Bắt đầu quét", style: TextStyle(fontSize: 16)),
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: _isFpScanning ? () => _sendFpControlCommand(false) : null,
-                              icon: const Icon(Icons.stop, color: Colors.white),
-                              label: const Text("Dừng", style: TextStyle(fontSize: 16)),
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                            ),
-                          ),
-                        ],
+                      // Nút START (Chỉ còn START)
+                      ElevatedButton.icon(
+                        onPressed: _isFpScanning ? null : _startFingerprintScan,
+                        icon: const Icon(Icons.play_arrow, color: Colors.white),
+                        label: const Text("Bắt đầu quét", style: TextStyle(fontSize: 16)),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                       ),
                     ],
                   ),
                 ),
               ),
 
-              // Khu vực hiển thị Ảnh
+              // Hiển thị ảnh
               if (_fpImageBytes != null) ...[
                 const SizedBox(height: 20),
                 Card(
@@ -451,11 +420,10 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                       Container(
                         height: 250,
                         width: double.infinity,
-                        color: Colors.black, // Background đen cho vân tay nổi bật
-                        // Widget hiển thị ảnh RAW
+                        color: Colors.black,
                         child: ImageWidgetFromRawData(
                           rawData: _fpImageBytes!,
-                          width: 256, // Kích thước chuẩn AS608
+                          width: 256,
                           height: 288,
                         ),
                       ),
@@ -475,9 +443,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   }
 }
 
-
 // =======================================================================
-// WIDGET XỬ LÝ ẢNH RAW (Cần thư viện 'image')
+// Widget hiển thị RAW → PNG
 // =======================================================================
 class ImageWidgetFromRawData extends StatelessWidget {
   final Uint8List rawData;
@@ -493,37 +460,32 @@ class ImageWidgetFromRawData extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Kích thước chuẩn 256*288 = 73728 bytes cho 8-bit grayscale
     if (rawData.length != width * height) {
-      return Center(child: Text("Lỗi: Dữ liệu ảnh không đủ/không khớp: ${rawData.length} bytes."));
+      return Center(child: Text("Lỗi: Dữ liệu ảnh không đúng: ${rawData.length} bytes"));
     }
 
     try {
-        // 1. Tạo đối tượng image từ Raw Grayscale bytes (8-bit)
-        final image = img.Image.fromBytes(
-          width: width,
-          height: height,
-          bytes: rawData.buffer,
-          numChannels: 1, // 1 kênh màu (Grayscale)
-        );
+      final image = img.Image.fromBytes(
+        width: width,
+        height: height,
+        bytes: rawData.buffer,
+        numChannels: 1,
+      );
+      final pngBytes = img.encodePng(image);
 
-        // 2. Chuyển đổi sang PNG để hiển thị trên Flutter
-        final pngBytes = img.encodePng(image);
-
-        // 3. Hiển thị ảnh PNG
-        return Image.memory(
-          pngBytes,
-          fit: BoxFit.contain,
-          gaplessPlayback: true,
-        );
+      return Image.memory(
+        pngBytes,
+        fit: BoxFit.contain,
+        gaplessPlayback: true,
+      );
     } catch (e) {
-        return Center(child: Text("Lỗi hiển thị ảnh: $e"));
+      return Center(child: Text("Lỗi hiển thị ảnh: $e"));
     }
   }
 }
 
 // =======================================================================
-// CLASS PROVISIONING FORM (Đã sửa lỗi ký tự)
+// Form Wi-Fi
 // =======================================================================
 class ProvisioningForm extends StatefulWidget {
   final void Function(String, String) onSubmit;
@@ -584,3 +546,4 @@ class _ProvisioningFormState extends State<ProvisioningForm> {
     );
   }
 }
+

@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
-import 'package:image/image.dart' as img; // Đảm bảo đã thêm 'image' trong pubspec.yaml
+import 'package:image/image.dart'
+    as img; // Đảm bảo đã thêm 'image' trong pubspec.yaml
 
 // =======================================================================
 // UUIDs CỦA BLE PROVISIONING
@@ -49,7 +50,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   bool isScanning = false;
   String connectionStatus = "Chưa quét";
 
-  BluetoothConnectionState _connectionState = BluetoothConnectionState.disconnected;
+  BluetoothConnectionState _connectionState =
+      BluetoothConnectionState.disconnected;
   StreamSubscription<BluetoothConnectionState>? _connSub;
   StreamSubscription<List<int>>? _statusSub;
 
@@ -87,7 +89,10 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
 
     final adapterState = await FlutterBluePlus.adapterState.first;
     if (adapterState != BluetoothAdapterState.on) {
-      setState(() => connectionStatus = "Vui lòng bật Bluetooth (và Location nếu cần).");
+      setState(
+        () =>
+            connectionStatus = "Vui lòng bật Bluetooth (và Location nếu cần).",
+      );
       return;
     }
 
@@ -144,7 +149,9 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   Future<void> connectBleOnly() async {
     if (targetDevice == null) return;
 
-    setState(() => connectionStatus = "Đang kết nối BLE tới $TARGET_DEVICE_NAME ...");
+    setState(
+      () => connectionStatus = "Đang kết nối BLE tới $TARGET_DEVICE_NAME ...",
+    );
 
     try {
       await targetDevice!.connect(timeout: const Duration(seconds: 15));
@@ -153,7 +160,9 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
         setState(() => _connectionState = s);
       });
 
-      setState(() => connectionStatus = "Đã kết nối BLE. Sẵn sàng gửi cấu hình.");
+      setState(
+        () => connectionStatus = "Đã kết nối BLE. Sẵn sàng gửi cấu hình.",
+      );
     } catch (e) {
       setState(() => connectionStatus = "Lỗi kết nối BLE: $e");
       try {
@@ -163,8 +172,11 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   }
 
   void connectAndProvision(String ssid, String password) async {
-    if (targetDevice == null || _connectionState != BluetoothConnectionState.connected) {
-      setState(() => connectionStatus = "Chưa kết nối BLE. Nhấn 'Kết nối BLE' trước.");
+    if (targetDevice == null ||
+        _connectionState != BluetoothConnectionState.connected) {
+      setState(
+        () => connectionStatus = "Chưa kết nối BLE. Nhấn 'Kết nối BLE' trước.",
+      );
       return;
     }
 
@@ -175,28 +187,35 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
 
       BluetoothService provService = services.firstWhere(
         (s) => s.uuid == PROV_SERVICE_UUID,
-        orElse: () => throw Exception("Không tìm thấy Provisioning Service (FF01)"),
+        orElse: () =>
+            throw Exception("Không tìm thấy Provisioning Service (FF01)"),
       );
 
       BluetoothCharacteristic ssidChar = provService.characteristics.firstWhere(
         (c) => c.uuid == SSID_CHAR_UUID,
-        orElse: () => throw Exception("Không tìm thấy SSID Characteristic (FF02)"),
+        orElse: () =>
+            throw Exception("Không tìm thấy SSID Characteristic (FF02)"),
       );
 
       BluetoothCharacteristic passChar = provService.characteristics.firstWhere(
         (c) => c.uuid == PASSWORD_CHAR_UUID,
-        orElse: () => throw Exception("Không tìm thấy Password Characteristic (FF03)"),
+        orElse: () =>
+            throw Exception("Không tìm thấy Password Characteristic (FF03)"),
       );
 
-      BluetoothCharacteristic connectChar = provService.characteristics.firstWhere(
-        (c) => c.uuid == CONNECT_CHAR_UUID,
-        orElse: () => throw Exception("Không tìm thấy Connect Characteristic (FF04)"),
-      );
+      BluetoothCharacteristic connectChar = provService.characteristics
+          .firstWhere(
+            (c) => c.uuid == CONNECT_CHAR_UUID,
+            orElse: () =>
+                throw Exception("Không tìm thấy Connect Characteristic (FF04)"),
+          );
 
-      BluetoothCharacteristic statusChar = provService.characteristics.firstWhere(
-        (c) => c.uuid == STATUS_CHAR_UUID,
-        orElse: () => throw Exception("Không tìm thấy Status Characteristic (FF05)"),
-      );
+      BluetoothCharacteristic statusChar = provService.characteristics
+          .firstWhere(
+            (c) => c.uuid == STATUS_CHAR_UUID,
+            orElse: () =>
+                throw Exception("Không tìm thấy Status Characteristic (FF05)"),
+          );
 
       setState(() => connectionStatus = "Đang gửi cấu hình...");
 
@@ -243,8 +262,10 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   }
 
   // =======================================================================
-  // HÀM ĐIỀU KHIỂN VÂN TAY (CHỈ CÒN START)
+  // HÀM ĐIỀU KHIỂN VÂN TAY
   // =======================================================================
+
+  /// Bước 1: Gửi lệnh START, rồi chờ status DONE (không polling /fpimage sớm)
   Future<void> _startFingerprintScan() async {
     if (_espIp == null || _isFpScanning) return;
 
@@ -256,54 +277,108 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
-        connectionStatus = "Đang quét vân tay...";
+        connectionStatus = "🔄 Đang chờ cảm biến...";
 
-        // Bắt timer để lấy ảnh liên tục mà không đơ AS608
-        _startFpScanTimer();
+        // Bắt timer để poll /fpstatus (không gửi request mới, chỉ check state)
+        _startStatusPoller();
       } else {
-        setState(() => connectionStatus = "Lỗi gửi lệnh START: ${response.statusCode}");
+        setState(
+          () => connectionStatus = "❌ Lỗi gửi START: ${response.statusCode}",
+        );
         setState(() => _isFpScanning = false);
       }
     } catch (e) {
       setState(() {
-        connectionStatus = "Lỗi HTTP START: $e";
+        connectionStatus = "❌ Lỗi: $e";
         _isFpScanning = false;
       });
     }
   }
 
+  /// Bước 2: Poll /fpstatus để chờ state = DONE (an toàn, không gián đoạn cảm biến)
+  void _startStatusPoller() {
+    _stopFpScanTimer();
+    _fpScanTimer = Timer.periodic(const Duration(milliseconds: 300), (
+      timer,
+    ) async {
+      if (_espIp != null && _isFpScanning) {
+        await _checkSensorStatus();
+      }
+    });
+  }
+
+  /// Poll /fpstatus - chỉ check state, không download ảnh
+  Future<void> _checkSensorStatus() async {
+    if (_espIp == null) return;
+
+    try {
+      final response = await http
+          .get(Uri.parse('http://$_espIp/fpstatus'))
+          .timeout(const Duration(seconds: 2));
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final state = json['state'] as String?;
+
+        if (state == 'SCANNING') {
+          setState(() => connectionStatus = "🔄 Cảm biến đang chạy...");
+        } else if (state == 'DONE') {
+          // ✅ Quét xong! Giờ mới download ảnh (an toàn)
+          connectionStatus = "✅ Đã quét xong, đang lấy ảnh...";
+          await _fetchFingerprintImage();
+          _stopFpScanTimer();
+        } else if (state == 'FAILED') {
+          connectionStatus = "⚠️ Quét thất bại (không đặt ngón tay?)";
+          setState(() => _isFpScanning = false);
+          _stopFpScanTimer();
+        } else if (state == 'IDLE') {
+          connectionStatus = "⚠️ Cảm biến không hoạt động";
+          setState(() => _isFpScanning = false);
+          _stopFpScanTimer();
+        }
+      }
+    } catch (e) {
+      // Timeout/lỗi status - vẫn chờ
+      setState(() => connectionStatus = "⏳ Chờ (kiểm tra trạng thái...)");
+    }
+  }
+
+  /// Bước 3: Sau khi state = DONE, gọi /fpimage một lần duy nhất
   Future<void> _fetchFingerprintImage() async {
     if (_espIp == null) return;
 
     try {
-      final response = await http.get(Uri.parse('http://$_espIp/fpimage'));
+      final response = await http
+          .get(
+            Uri.parse('http://$_espIp/fpimage'),
+            headers: {'Accept': 'application/octet-stream'},
+          )
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
-        // Nhận RAW bytes
-        setState(() {
-          _fpImageBytes = response.bodyBytes;
-          connectionStatus = "Ảnh vân tay mới (${_fpImageBytes!.length} bytes)";
-          _isFpScanning = false; // Khi ảnh nhận xong, mở lại nút START
-        });
-        _stopFpScanTimer();
-      } else if (response.statusCode == 204) {
-        // No Content, vẫn đang quét
-        setState(() => connectionStatus = "Đang quét, chờ ngón tay...");
+        final expectedSize = 256 * 288;
+
+        if (response.bodyBytes.length == expectedSize) {
+          setState(() {
+            _fpImageBytes = response.bodyBytes;
+            connectionStatus = "✓ Ảnh vân tay (${_fpImageBytes!.length} bytes)";
+            _isFpScanning = false;
+          });
+          print("[DEBUG] Image received successfully");
+        } else {
+          setState(
+            () => connectionStatus =
+                "⚠ Kích thước sai: ${response.bodyBytes.length}/${expectedSize}",
+          );
+        }
+      } else if (response.statusCode == 404) {
+        setState(() => connectionStatus = "⚠ Ảnh chưa sẵn sàng");
       } else {
-        setState(() => connectionStatus = "Lỗi HTTP: ${response.statusCode}");
+        setState(() => connectionStatus = "❌ HTTP ${response.statusCode}");
       }
     } catch (e) {
-      setState(() => connectionStatus = "Lỗi HTTP Request: $e");
+      setState(() => connectionStatus = "❌ Lỗi tải ảnh: $e");
     }
-  }
-
-  void _startFpScanTimer() {
-    _stopFpScanTimer();
-    _fpScanTimer = Timer.periodic(const Duration(milliseconds: 700), (timer) {
-      if (_espIp != null && _isFpScanning) {
-        _fetchFingerprintImage();
-      }
-    });
   }
 
   void _stopFpScanTimer() {
@@ -316,7 +391,8 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   // =======================================================================
   @override
   Widget build(BuildContext context) {
-    final bool isConnected = _connectionState == BluetoothConnectionState.connected;
+    final bool isConnected =
+        _connectionState == BluetoothConnectionState.connected;
 
     return Scaffold(
       appBar: AppBar(title: const Text('BLE + Fingerprint Scanner')),
@@ -325,9 +401,15 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Trạng thái: $connectionStatus', style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text(
+              'Trạng thái: $connectionStatus',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 10),
-            Text('BLE: ${_connectionState.name}', style: const TextStyle(color: Colors.grey)),
+            Text(
+              'BLE: ${_connectionState.name}',
+              style: const TextStyle(color: Colors.grey),
+            ),
             const SizedBox(height: 20),
 
             // Nút Scan
@@ -389,7 +471,10 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                         children: [
                           const Icon(Icons.wifi, color: Colors.green),
                           const SizedBox(width: 8),
-                          Text("ESP32 IP: $_espIp", style: const TextStyle(fontWeight: FontWeight.bold)),
+                          Text(
+                            "ESP32 IP: $_espIp",
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 16),
@@ -397,8 +482,13 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                       ElevatedButton.icon(
                         onPressed: _isFpScanning ? null : _startFingerprintScan,
                         icon: const Icon(Icons.play_arrow, color: Colors.white),
-                        label: const Text("Bắt đầu quét", style: TextStyle(fontSize: 16)),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                        label: const Text(
+                          "Bắt đầu quét",
+                          style: TextStyle(fontSize: 16),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                        ),
                       ),
                     ],
                   ),
@@ -410,17 +500,33 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                 const SizedBox(height: 20),
                 Card(
                   elevation: 4,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       const Padding(
                         padding: EdgeInsets.all(16.0),
-                        child: Text("Ảnh vân tay (RAW Grayscale):", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        child: Row(
+                          children: [
+                            Icon(Icons.fingerprint, color: Colors.blue),
+                            SizedBox(width: 8),
+                            Text(
+                              "Ảnh vân tay (256x288 Grayscale)",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
+                      const Divider(height: 1),
                       Container(
-                        height: 250,
-                        width: double.infinity,
-                        color: Colors.black,
+                        height: 320,
+                        color: Colors.grey[100],
+                        padding: const EdgeInsets.all(8),
                         child: ImageWidgetFromRawData(
                           rawData: _fpImageBytes!,
                           width: 256,
@@ -429,7 +535,30 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
                       ),
                       Padding(
                         padding: const EdgeInsets.all(16.0),
-                        child: Text("${_fpImageBytes!.length} bytes", style: const TextStyle(color: Colors.grey)),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              "Dung lượng: ${_fpImageBytes!.length} bytes",
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 13,
+                              ),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed: _startFingerprintScan,
+                              icon: const Icon(Icons.refresh, size: 18),
+                              label: const Text("Quét lại"),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 8,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -461,25 +590,83 @@ class ImageWidgetFromRawData extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (rawData.length != width * height) {
-      return Center(child: Text("Lỗi: Dữ liệu ảnh không đúng: ${rawData.length} bytes"));
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 48),
+            const SizedBox(height: 16),
+            Text("Lỗi: Dữ liệu ảnh không đúng"),
+            const SizedBox(height: 8),
+            Text(
+              "Dự kiến: ${width * height} bytes\nNhận được: ${rawData.length} bytes",
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      );
     }
 
     try {
-      final image = img.Image.fromBytes(
+      // Tạo Image object từ raw data (8-bit grayscale)
+      // Dùng format rgba để compatible với image package
+      final image = img.Image(
         width: width,
         height: height,
-        bytes: rawData.buffer,
-        numChannels: 1,
+        format: img.Format.uint8,
       );
-      final pngBytes = img.encodePng(image);
 
-      return Image.memory(
-        pngBytes,
-        fit: BoxFit.contain,
-        gaplessPlayback: true,
+      // Copy raw data vào image (mỗi pixel là 1 byte grayscale)
+      // Sử dụng .buffer để truy cập mảng bytes directly
+      final imageBytes = image.toUint8List();
+      for (int i = 0; i < rawData.length; i++) {
+        imageBytes[i] = rawData[i];
+      }
+
+      // Tạo Image mới từ bytes
+      final newImage = img.Image.fromBytes(
+        width: width,
+        height: height,
+        bytes: imageBytes.buffer,
+        format: img.Format.uint8,
+      );
+
+      // Encode thành PNG
+      final pngBytes = img.encodePng(newImage);
+
+      return SingleChildScrollView(
+        child: Column(
+          children: [
+            Image.memory(
+              pngBytes,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              filterQuality: FilterQuality.high,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "Kích thước: ${width}x${height} | Dung lượng: ${rawData.length} bytes",
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
       );
     } catch (e) {
-      return Center(child: Text("Lỗi hiển thị ảnh: $e"));
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.broken_image, color: Colors.orange, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              "Lỗi xử lý ảnh: $e",
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      );
     }
   }
 }
@@ -496,16 +683,26 @@ class ProvisioningForm extends StatefulWidget {
 }
 
 class _ProvisioningFormState extends State<ProvisioningForm> {
-  final TextEditingController ssidController = TextEditingController(text: "Ten_Wifi_Cua_Toi");
-  final TextEditingController passController = TextEditingController(text: "MatKhau_Cua_Toi");
+  final TextEditingController ssidController = TextEditingController(
+    text: "Ten_Wifi_Cua_Toi",
+  );
+  final TextEditingController passController = TextEditingController(
+    text: "MatKhau_Cua_Toi",
+  );
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text("Cấu hình Wi-Fi:", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18)),
-        const Text(TARGET_DEVICE_NAME, style: TextStyle(color: Colors.blueAccent, fontSize: 16)),
+        const Text(
+          "Cấu hình Wi-Fi:",
+          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18),
+        ),
+        const Text(
+          TARGET_DEVICE_NAME,
+          style: TextStyle(color: Colors.blueAccent, fontSize: 16),
+        ),
         const SizedBox(height: 15),
         TextField(
           controller: ssidController,
@@ -532,18 +729,22 @@ class _ProvisioningFormState extends State<ProvisioningForm> {
             onPressed: () {
               if (ssidController.text.isEmpty || passController.text.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("Vui lòng nhập SSID và Password.")),
+                  const SnackBar(
+                    content: Text("Vui lòng nhập SSID và Password."),
+                  ),
                 );
                 return;
               }
               widget.onSubmit(ssidController.text, passController.text);
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            child: const Text("Gửi cấu hình Wi-Fi", style: TextStyle(fontSize: 16)),
+            child: const Text(
+              "Gửi cấu hình Wi-Fi",
+              style: TextStyle(fontSize: 16),
+            ),
           ),
         ),
       ],
     );
   }
 }
-

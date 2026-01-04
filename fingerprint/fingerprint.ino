@@ -33,6 +33,7 @@ void setup() {
 
   // HTTP API
   server.on("/fpcontrol", handleFpControl);
+  server.on("/fpstatus", handleFpStatus);
   server.on("/fpimage", handleFpImage);
 
   Serial.println("[SYS] Setup done");
@@ -94,6 +95,20 @@ void handleFpControl() {
   } else {
     server.send(400, "text/plain", "Invalid cmd");
   }
+}
+
+// ---- GET STATUS ----
+void handleFpStatus() {
+  String stateStr;
+  if (fpState == FP_IDLE) {
+    stateStr = "IDLE";
+  } else if (fpState == FP_SCANNING) {
+    stateStr = "SCANNING";
+  } else {
+    stateStr = fpImageReady ? "DONE" : "FAILED";
+  }
+
+  server.send(200, "application/json", "{\"state\":\"" + stateStr + "\"}");
 }
 
 // ---- GET IMAGE ----

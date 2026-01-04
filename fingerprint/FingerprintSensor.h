@@ -10,6 +10,11 @@
 #define FP_RX 6
 #define FP_TX 7
 
+// Callback untuk server.handleClient() 
+// fpLoop() sẽ gọi ini để app bisa poll /fpstatus lúc sensor đang scan
+typedef void (*ServerHandlerCallback)(void);
+void fpSetServerHandler(ServerHandlerCallback callback);
+
 void fpInit();
 bool fpLoop();                 // chụp ảnh nếu có ngón tay
 

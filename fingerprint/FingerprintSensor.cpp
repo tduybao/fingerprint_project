@@ -10,6 +10,13 @@ static Adafruit_Fingerprint finger(&FPSerial);
 static uint8_t imageBuf[FP_IMG_SIZE];
 static uint16_t imageSize = 0;
 
+// ================= SERVER HANDLER CALLBACK =================
+static ServerHandlerCallback serverHandler = nullptr;
+
+void fpSetServerHandler(ServerHandlerCallback callback) {
+  serverHandler = callback;
+}
+
 // ================= FORWARD DECLARATIONS =================
 static bool downloadImageFromAS608();
 
@@ -46,6 +53,11 @@ bool fpLoop() {
   uint32_t genImageTime = millis() - genImageStart;
   Serial.printf("[FP] getImage() took %lums\n", genImageTime);
 
+  // Allow app to poll /fpstatus while waiting for finger
+  if (serverHandler) {
+    serverHandler();
+  }
+
   if (p == FINGERPRINT_NOFINGER) {
     Serial.println("[FP] No finger detected - timeout or no contact");
     return false;
@@ -75,6 +87,11 @@ bool fpLoop() {
   uint32_t imgToTzTime = millis() - imgToTzStart;
   Serial.printf("[FP] image2Tz() took %lums\n", imgToTzTime);
 
+  // Allow app to poll /fpstatus while converting
+  if (serverHandler) {
+    serverHandler();
+  }
+
   if (p == FINGERPRINT_IMAGEMESS) {
     Serial.println("[FP] Image too messy - finger not clear");
     return false;
@@ -95,17 +112,14 @@ bool fpLoop() {
   Serial.println("[FP] ✓ STEP 2 OK: Image converted to template. Ready to download RAW image.");
 
   // ===== STEP 3: Download RAW Image Data =====
-  // Dùng AS608 protocol trực tiếp để download ảnh
-  // Workflow:
-  // 1. Gửi UpImage command (0x0A) tới AS608
-  // 2. AS608 tự động gửi data packets (256 bytes/packet)
-  // 3. Mỗi data packet: [Header][Address][Type][Length][256 bytes][Checksum]
-  // 4. Tổng 288 packets = 73,728 bytes
-  // 5. Kết thúc: END packet (0x08)
+  // IMPORTANT: UpImage command MUST be sent AFTER image2Tz()
+  // because image2Tz() may interfere with image buffer
   
   Serial.println("[FP] STEP 3: Downloading RAW image from AS608...");
   uint32_t downloadStart = millis();
   
+  // Try to get image from Adafruit library first
+  // If that doesn't work, use custom protocol
   if (!downloadImageFromAS608()) {
     Serial.println("[FP] ✗ STEP 3 FAILED: Could not download image");
     return false;
@@ -170,22 +184,44 @@ static bool sendUpImageCommand() {
   checksum = packet[6] + packet[7] + packet[8] + packet[9];
   packet[10] = checksum >> 8;
   packet[11] = checksum & 0xFF;
-
+  
   // Send command
   FPSerial.write(packet, 12);
   FPSerial.flush();
   
-  delay(100);  // Wait for AS608 to respond
+  // Wait for AS608 to prepare
+  delay(150);
+  
   return true;
 }
 
 static bool downloadImageFromAS608() {
+  Serial.println("\n\n[FP] ==================== DOWNLOAD START ====================");
+  Serial.println("[FP] About to clear serial buffer...");
+  
+  // CRITICAL: Clear serial buffer completely
+  uint16_t bytesCleared = 0;
+  while (FPSerial.available()) {
+    FPSerial.read();
+    bytesCleared++;
+  }
+  delay(50);  // Quick wait for stray bytes
+  while (FPSerial.available()) {
+    FPSerial.read();
+    bytesCleared++;
+  }
+  Serial.printf("[FP] Total cleared: %d bytes\n", bytesCleared);
+  
   // Send UpImage command first
   if (!sendUpImageCommand()) {
-    Serial.println("[FP] Failed to send UpImage command");
+    Serial.println("[FP] ✗ Failed to send UpImage command");
     return false;
   }
 
+  // Wait for AS608 to start sending data
+  delay(100);
+  Serial.println("[FP] Receiving data packets...");
+  
   uint32_t idx = 0;
   uint8_t dataPacketCount = 0;
   
@@ -202,6 +238,11 @@ static bool downloadImageFromAS608() {
       return false;
     }
 
+    // Allow app to poll /fpstatus while downloading image
+    if (serverHandler && dataPacketCount % 10 == 0) {
+      serverHandler();  // Every 10 packets, allow HTTP handling
+    }
+
     // Wait for data from AS608 - but with SHORT timeout
     uint32_t packetWaitStart = millis();
     while (!FPSerial.available() && millis() - packetWaitStart < PACKET_TIMEOUT) {
@@ -216,6 +257,8 @@ static bool downloadImageFromAS608() {
     
     // Look for header
     if (byte1 != FP_HEADER_H) {
+      // Not header, skip this byte and continue looking
+      Serial.printf("[FP] Skipping byte 0x%02X (not header)\n", byte1);
       continue;
     }
 
@@ -231,7 +274,9 @@ static bool downloadImageFromAS608() {
 
     uint8_t byte2 = FPSerial.read();
     if (byte2 != FP_HEADER_L) {
-      continue;  // Not a valid header
+      // Not valid header, continue searching
+      Serial.printf("[FP] Invalid second header byte: 0x%02X (expected 0x%02X)\n", byte2, FP_HEADER_L);
+      continue;
     }
 
     // Read address (4 bytes) - usually FF FF FF FF
@@ -285,14 +330,18 @@ static bool downloadImageFromAS608() {
     }
     packetLen |= FPSerial.read();
 
-    if (packetType == FP_DATA_PACKET) {
-      // Data packet: read payload (should be 256 bytes)
-      if (packetLen < 256) {
-        Serial.printf("[FP] Invalid packet length: %d\n", packetLen);
-        continue;  // Skip invalid packet, don't fail
-      }
+    // Validate packet length - must be reasonable (1-260 bytes)
+    if (packetLen > 260 || packetLen == 0) {
+      Serial.printf("[FP] Invalid packet length: %d (out of range)\n", packetLen);
+      continue;  // Skip this byte and try again
+    }
 
-      Serial.printf("[FP] Data packet %d: reading 256 bytes\n", dataPacketCount);
+    if (packetType == FP_DATA_PACKET) {
+      // Data packet: payload should be exactly 256 bytes (+ 2 checksum = 258 length)
+      if (packetLen != 258) {
+        Serial.printf("[FP] Unexpected data packet length: %d (expected 258)\n", packetLen);
+        continue;  // Skip invalid packet
+      }
 
       // Read exactly 256 bytes of image data
       bool dataOK = true;
@@ -330,22 +379,19 @@ static bool downloadImageFromAS608() {
 
       dataPacketCount++;
       
-      // Log progress every 8 packets
-      if (dataPacketCount % 8 == 0) {
-        Serial.printf("[FP] Progress: %d/%d bytes (%.1f%%)\n", idx, FP_IMG_SIZE, (float)idx / FP_IMG_SIZE * 100);
+      // Log progress every 32 packets
+      if (dataPacketCount % 32 == 0) {
+        Serial.printf("[FP] %d packets received...\n", dataPacketCount);
       }
 
     } else if (packetType == FP_END_PACKET) {
       // End of transfer packet
-      Serial.println("[FP] Received END packet");
-      
-      // Skip remaining bytes and checksum
+      // Skip remaining bytes
       for (int i = 0; i < packetLen; i++) {
         if (FPSerial.available()) {
           FPSerial.read();
         }
       }
-      
       break;  // Done receiving image
 
     } else if (packetType == FP_ACK_PACKET) {
@@ -377,14 +423,11 @@ static bool downloadImageFromAS608() {
   }
 
   if (idx == FP_IMG_SIZE) {
-    Serial.printf("[FP] SUCCESS: Received all %d bytes in %lums\n", FP_IMG_SIZE, millis() - startTime);
+    Serial.printf("[FP] ✓ Download complete: %d bytes in %lums\n", FP_IMG_SIZE, millis() - startTime);
     return true;
   } else {
-    Serial.printf("[FP] INCOMPLETE: Got %d/%d bytes after %lums\n", idx, FP_IMG_SIZE, millis() - startTime);
-    // Partial image is better than nothing - return true anyway for some cases
-    // Uncomment next line if you want strict checking
-    // return false;
-    return true;  // Allow partial transfer
+    Serial.printf("[FP] ✗ Download incomplete: %d/%d bytes\n", idx, FP_IMG_SIZE);
+    return false;
   }
 }
 

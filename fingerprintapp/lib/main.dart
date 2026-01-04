@@ -365,6 +365,9 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
             _isFpScanning = false;
           });
           print("[DEBUG] Image received successfully");
+          
+          // Reset cảm biến để sẵn sàng quét lần tiếp theo
+          await _resetFingerprintSensor();
         } else {
           setState(
             () => connectionStatus =
@@ -384,6 +387,23 @@ class _ProvisioningScreenState extends State<ProvisioningScreen> {
   void _stopFpScanTimer() {
     _fpScanTimer?.cancel();
     _fpScanTimer = null;
+  }
+
+  /// Reset cảm biến để sẵn sàng quét lần tiếp theo
+  Future<void> _resetFingerprintSensor() async {
+    if (_espIp == null) return;
+
+    try {
+      final response = await http
+          .get(Uri.parse('http://$_espIp/fpcontrol?cmd=reset'))
+          .timeout(const Duration(seconds: 2));
+
+      if (response.statusCode == 200) {
+        print("[DEBUG] Fingerprint sensor reset successfully");
+      }
+    } catch (e) {
+      print("[DEBUG] Reset error: $e");
+    }
   }
 
   // =======================================================================
